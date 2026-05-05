@@ -8,14 +8,10 @@ on:
         required: true
         type: string
       zip_password:
-        description: 'رمز عبور برای فایل فشرده'
-        required: true
-        type: string
-      delete_old_archives:
-        description: 'پاک کردن فایل‌های قبلی (در صورت تیک زدن، اگه فایل‌های قدیمی در مخزن باشن اتوماتیک حذف میشن)'
+        description: 'رمز عبور برای فایل فشرده (اختیاری؛ خالی = بدون رمز)'
         required: false
-        type: boolean
-        default: false
+        type: string
+        default: ''
       output_folder:
         description: 'پوشه ذخیره فایل و آرشیوها (نسبت به ریشه مخزن)'
         required: false
@@ -37,18 +33,6 @@ jobs:
 
       - name: Create output folder
         run: mkdir -p "${{ inputs.output_folder }}"
-
-      - name: Clean old archives (if requested)
-        if: ${{ github.event.inputs.delete_old_archives == 'true' }}
-        run: |
-          echo "حذف فایل‌های قدیمی آرشیو درخواست شد."
-          cd "${{ inputs.output_folder }}"
-          find . -maxdepth 1 -type f -name "*.7z.*" -exec rm -v {} \;
-          find . -maxdepth 1 -type f -name "*.7z" -exec rm -v {} \;
-          echo "فایل‌های قدیمی آرشیو پاک شدند."
-          # Unstage any deleted files from git index
-          git rm --cached "${{ inputs.output_folder }}/*.7z.*" 2>/dev/null || echo "No .7z.* files to unstage."
-          git rm --cached "${{ inputs.output_folder }}/*.7z" 2>/dev/null || echo "No .7z files to unstage."
 
       - name: Install 7z
         run: |
@@ -126,13 +110,21 @@ jobs:
         id: timestamp
         run: echo "value=$(date +%Y%m%d_%H%M%S)" >> $GITHUB_OUTPUT
 
-      - name: Create encrypted split archive
+      - name: Create split archive (with optional password)
         run: |
           ARCHIVE_NAME_PREFIX="${{ steps.get_filename.outputs.archive_base_name }}_${{ steps.timestamp.outputs.value }}"
           NEW_ORIGINAL_PATH="${{ steps.rename_file.outputs.new_original_path }}"
+          PASS="${{ github.event.inputs.zip_password }}"
           cd "${{ inputs.output_folder }}"
-          # 7zip split archive into 85MB parts
-          7z a -p"${{ github.event.inputs.zip_password }}" -mhe=on -mx=3 -v85m "${ARCHIVE_NAME_PREFIX}.7z" "$(basename "$NEW_ORIGINAL_PATH")"
+
+          FILE="$(basename "$NEW_ORIGINAL_PATH")"
+          if [ -n "$PASS" ]; then
+            7z a -p"$PASS" -mhe=on -mx=3 -v85m "${ARCHIVE_NAME_PREFIX}.7z" "$FILE"
+          else
+            7z a -mx=3 -v85m "${ARCHIVE_NAME_PREFIX}.7z" "$FILE"
+          fi
+
+          # If only one part generated, rename it to .7z
           if [ -f "${ARCHIVE_NAME_PREFIX}.7z.001" ] && [ ! -f "${ARCHIVE_NAME_PREFIX}.7z.002" ]; then
             mv "${ARCHIVE_NAME_PREFIX}.7z.001" "${ARCHIVE_NAME_PREFIX}.7z"
             echo "Single chunk - renamed to .7z"
@@ -144,7 +136,6 @@ jobs:
           if [[ -n "$FILE" && -f "$FILE" ]]; then
             rm "$FILE"
           fi
-
 
       - name: Commit and push
         run: |
